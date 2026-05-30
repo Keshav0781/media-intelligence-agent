@@ -228,3 +228,7 @@ data/
 *.mkv
 *.avi
 *.mov
+
+# Logs
+logs/
+*.log

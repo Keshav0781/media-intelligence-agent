@@ -2,6 +2,10 @@ import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 import whisper
 import os
+from app.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 def transcribe_audio(audio_path: str, language: str = None) -> dict:
     """
@@ -18,25 +22,22 @@ def transcribe_audio(audio_path: str, language: str = None) -> dict:
             - segments: List of segments with timestamps
             - language: Detected/specified language
     """
-    # Check audio file exists
     if not os.path.exists(audio_path):
+        logger.error(f"Audio file not found: {audio_path}")
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
-    
-    print(f"Loading Whisper model...")
-    # Using 'base' model - good balance of speed and accuracy for testing
-    # In production we would use 'medium' or 'large' for better accuracy
+
+    logger.info(f"Loading Whisper model...")
     model = whisper.load_model("base")
-    
-    print(f"Transcribing audio: {audio_path}")
-    
-    # Transcribe with or without language hint
+
+    logger.info(f"Transcribing audio: {audio_path}")
+
     options = {}
     if language:
         options["language"] = language
-    
+        logger.debug(f"Language hint provided: {language}")
+
     result = model.transcribe(audio_path, **options)
-    
-    # Structure the output clearly
+
     transcript = {
         "text": result["text"].strip(),
         "segments": [
@@ -49,8 +50,9 @@ def transcribe_audio(audio_path: str, language: str = None) -> dict:
         ],
         "language": result["language"]
     }
-    
-    print(f"Transcription complete. Language detected: {transcript['language']}")
-    print(f"Total segments: {len(transcript['segments'])}")
-    
+
+    logger.info(f"Transcription complete. Language detected: {transcript['language']}")
+    logger.info(f"Total segments: {len(transcript['segments'])}")
+    logger.debug(f"Transcript length: {len(transcript['text'])} characters")
+
     return transcript

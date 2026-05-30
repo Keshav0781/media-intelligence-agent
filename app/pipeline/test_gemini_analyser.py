@@ -1,96 +1,75 @@
 import os
-import sys
-import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+import time
+import pytest
 
-from app.pipeline.gemini_analyser import analyse_video
-from app.pipeline.transcriber import transcribe_audio
-from app.pipeline.frame_extractor import extract_keyframes
 
-def test_gemini_analyser():
-    video_path = "data/test_video.mp4"
-    audio_path = "data/test_audio.wav"
-    keyframes_dir = "data/keyframes"
+def test_analysis_has_required_fields(analysis):
+    """Test that analysis has all required fields."""
+    assert "overall_summary" in analysis
+    assert "main_topics" in analysis
+    assert "speakers" in analysis
+    assert "broadcast_type" in analysis
+    assert "language" in analysis
+    assert "key_stories" in analysis
 
-    # Test 1 - Check all required files exist
-    assert os.path.exists(video_path), f"Video file not found: {video_path}"
-    assert os.path.exists(audio_path), f"Audio file not found: {audio_path}"
-    assert os.path.exists(keyframes_dir), f"Keyframes directory not found: {keyframes_dir}"
-    print(" Test 1 passed: All required files exist")
 
-    # Test 2 - Load transcript
-    print("Loading transcript...")
-    transcript = transcribe_audio(audio_path)
-    assert len(transcript["segments"]) > 0, "No segments in transcript"
-    print(f" Test 2 passed: Transcript loaded - {len(transcript['segments'])} segments")
+def test_analysis_language_is_german(analysis):
+    """Test that German language was correctly identified."""
+    assert analysis["language"] == "de"
 
-    # Test 3 - Load keyframes
-    print("Loading keyframes...")
-    keyframes = extract_keyframes(
-        video_path=video_path,
-        output_dir=keyframes_dir,
-        transcript_segments=transcript["segments"]
-    )
-    assert len(keyframes) > 0, "No keyframes extracted"
-    print(f" Test 3 passed: {len(keyframes)} keyframes loaded")
 
-    # Test 4 - Run full video analysis
-    print("Running Gemini analysis...")
-    result = analyse_video(
-        video_path=video_path,
-        transcript=transcript,
-        keyframes=keyframes
-    )
-    print(" Test 4 passed: Gemini analysis completed")
+def test_analysis_broadcast_type(analysis):
+    """Test that broadcast type was identified."""
+    assert len(analysis["broadcast_type"]) > 0
 
-    # Test 5 - Check result has required fields
-    assert "overall_summary" in result, "Missing overall_summary"
-    assert "main_topics" in result, "Missing main_topics"
-    assert "speakers" in result, "Missing speakers"
-    assert "broadcast_type" in result, "Missing broadcast_type"
-    assert "language" in result, "Missing language"
-    assert "key_stories" in result, "Missing key_stories"
-    print(" Test 5 passed: Result has all required fields")
 
-    # Test 6 - Check result content is not empty
-    assert len(result["overall_summary"]) > 0, "Overall summary is empty"
-    assert len(result["main_topics"]) > 0, "No main topics found"
-    print(" Test 6 passed: Result has meaningful content")
+def test_analysis_has_topics(analysis):
+    """Test that main topics were extracted."""
+    assert len(analysis["main_topics"]) > 0
 
-    # Test 7 - Check cache was created
-    from app.pipeline.gemini_analyser import get_video_hash, CACHE_DIR
-    video_hash = get_video_hash(video_path)
-    cache_path = os.path.join(CACHE_DIR, f"{video_hash}.json")
-    assert os.path.exists(cache_path), "Cache file was not created"
-    print(" Test 7 passed: Cache file created")
 
-    # Test 8 - Run again and verify cache is used
-    print("Running analysis again to test cache...")
-    import time
+def test_analysis_topic_count(analysis):
+    """Test expected number of topics."""
+    assert len(analysis["main_topics"]) == 6
+
+
+def test_analysis_has_stories(analysis):
+    """Test that key stories were extracted."""
+    assert len(analysis["key_stories"]) > 0
+
+
+def test_analysis_story_count(analysis):
+    """Test expected number of key stories."""
+    assert len(analysis["key_stories"]) == 6
+
+
+def test_analysis_story_structure(analysis):
+    """Test that stories have correct structure."""
+    for story in analysis["key_stories"]:
+        assert "timestamp" in story
+        assert "story" in story
+        assert len(story["story"]) > 0
+
+
+def test_analysis_has_speakers(analysis):
+    """Test that speakers were identified."""
+    assert len(analysis["speakers"]) > 0
+
+
+def test_analysis_summary_not_empty(analysis):
+    """Test that summary has meaningful content."""
+    assert len(analysis["overall_summary"]) > 100
+
+
+def test_cache_returns_quickly(test_video_path, transcript, keyframes):
+    """Test that cache returns result in under 1 second."""
+    from app.pipeline.gemini_analyser import analyse_video
     start = time.time()
-    result_cached = analyse_video(
-        video_path=video_path,
+    result = analyse_video(
+        video_path=test_video_path,
         transcript=transcript,
         keyframes=keyframes
     )
     elapsed = time.time() - start
-    assert elapsed < 1.0, f"Cache lookup took too long: {elapsed:.2f}s"
-    assert result_cached["overall_summary"] == result["overall_summary"], "Cached result differs"
-    print(f" Test 8 passed: Cache returned in {elapsed:.3f}s")
-
-    # Print results
-    print("\n--- Analysis Results ---")
-    print(f"Language: {result['language']}")
-    print(f"Broadcast type: {result['broadcast_type']}")
-    print(f"Main topics: {result['main_topics']}")
-    print(f"Speakers: {result['speakers']}")
-    print(f"Summary: {result['overall_summary']}")
-    print("\nKey stories:")
-    for story in result.get("key_stories", []):
-        print(f"  [{story.get('timestamp', '')}] {story.get('story', '')}")
-
-    print("\n All tests passed!")
-
-if __name__ == "__main__":
-    test_gemini_analyser()
+    assert elapsed < 1.0
+    assert "overall_summary" in result

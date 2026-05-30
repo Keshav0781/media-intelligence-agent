@@ -1,12 +1,10 @@
-# Note: visual+audio combined detection requires exact frame coincidence.
-# In practice, camera cuts and speech boundaries are typically 2-5 frames apart.
-# This is a known characteristic of broadcast media — not a bug.
-# Future improvement: implement tolerance window of ±5 frames for combined detection.
-
-
 import cv2
 import os
 from typing import List, Dict
+from app.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 def extract_keyframes(
     video_path: str,
@@ -18,33 +16,26 @@ def extract_keyframes(
     """
     Extract keyframes using multimodal scene detection.
     Combines visual histogram comparison with audio transcript timestamps.
-    
-    This mirrors production broadcast media analysis systems where scene 
-    changes are detected using both visual and audio signals together.
-    
+
     Args:
         video_path: Path to input video file
         output_dir: Directory to save extracted frames
         transcript_segments: Whisper segments with timestamps (optional)
-                           When provided, extracts frames at speech boundaries too
         threshold: Visual scene change sensitivity 0-1 (lower = more sensitive)
-                  0.4 is optimal for news broadcast content
         min_interval_seconds: Minimum seconds between extracted frames
-    
+
     Returns:
-        List of dicts containing:
-            - frame_path: Path to saved frame image
-            - timestamp: Time in seconds when frame was captured
-            - frame_number: Frame number in video
-            - detection_type: 'visual', 'audio' or 'visual+audio'
+        List of dicts containing frame_path, timestamp, frame_number, detection_type
     """
     if not os.path.exists(video_path):
+        logger.error(f"Video file not found: {video_path}")
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
     os.makedirs(output_dir, exist_ok=True)
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
+        logger.error(f"Could not open video: {video_path}")
         raise RuntimeError(f"Could not open video: {video_path}")
 
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -52,10 +43,7 @@ def extract_keyframes(
     duration = total_frames / fps
     min_interval_frames = int(min_interval_seconds * fps)
 
-    print(f"Video properties:")
-    print(f"  FPS: {fps:.1f}")
-    print(f"  Total frames: {total_frames}")
-    print(f"  Duration: {duration:.1f} seconds")
+    logger.info(f"Video properties: FPS={fps:.1f}, frames={total_frames}, duration={duration:.1f}s")
 
     # Build set of frame numbers where speech boundaries occur
     speech_boundary_frames = set()
@@ -63,7 +51,7 @@ def extract_keyframes(
         for segment in transcript_segments:
             boundary_frame = int(segment["start"] * fps)
             speech_boundary_frames.add(boundary_frame)
-        print(f"  Speech boundaries detected: {len(speech_boundary_frames)}")
+        logger.info(f"Speech boundaries detected: {len(speech_boundary_frames)}")
 
     keyframes = []
     prev_hist = None
@@ -75,10 +63,8 @@ def extract_keyframes(
         if not ret:
             break
 
-        # Convert to HSV for robust colour comparison
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Calculate normalised histogram using Hue and Saturation channels
         hist = cv2.calcHist(
             [hsv], [0, 1], None,
             [50, 60],
@@ -112,8 +98,6 @@ def extract_keyframes(
             frame_path = os.path.join(output_dir, frame_filename)
             cv2.imwrite(frame_path, frame)
 
-            # Store only file path — PIL Image loaded on demand in Gemini component
-            # This is lazy loading — keeps memory low for long videos
             keyframes.append({
                 "frame_path": frame_path,
                 "timestamp": round(timestamp, 2),
@@ -122,6 +106,7 @@ def extract_keyframes(
             })
 
             last_extracted_frame = frame_number
+            logger.debug(f"Keyframe extracted: {timestamp:.2f}s [{detection_type}]")
 
         prev_hist = hist
         frame_number += 1
@@ -132,9 +117,6 @@ def extract_keyframes(
     audio_count = sum(1 for k in keyframes if k["detection_type"] == "audio")
     combined_count = sum(1 for k in keyframes if k["detection_type"] == "visual+audio")
 
-    print(f"Keyframes extracted: {len(keyframes)}")
-    print(f"  Visual scene changes: {visual_count}")
-    print(f"  Audio speech boundaries: {audio_count}")
-    print(f"  Combined signals: {combined_count}")
+    logger.info(f"Keyframes extracted: {len(keyframes)} (visual={visual_count}, audio={audio_count}, combined={combined_count})")
 
     return keyframes

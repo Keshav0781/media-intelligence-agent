@@ -9,8 +9,11 @@ import google.genai as genai
 from dotenv import load_dotenv
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
+from app.logger import get_logger
 
 load_dotenv()
+
+logger = get_logger(__name__)
 
 # Initialize Gemini client
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -20,23 +23,18 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL")
 CACHE_DIR = "data/cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Maximum parallel workers - stays within Gemini rate limits
+# Maximum parallel workers
 MAX_WORKERS = 5
 
 # Chunk size in seconds
 CHUNK_SIZE_SECONDS = 30.0
 
 # Threshold for adaptive processing
-# Videos shorter than this are sent to Gemini in one call
-# Videos longer than this use chunking + parallel processing
-DIRECT_ANALYSIS_THRESHOLD_SECONDS = 600.0  # 10 minutes
+DIRECT_ANALYSIS_THRESHOLD_SECONDS = 600.0
 
 
 def get_video_hash(video_path: str) -> str:
-    """
-    Generate unique hash for video file.
-    Used as cache key — same video always gets same hash.
-    """
+    """Generate unique MD5 hash for video file. Used as cache key."""
     hasher = hashlib.md5()
     with open(video_path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
@@ -47,6 +45,7 @@ def get_video_hash(video_path: str) -> str:
 def load_cache(cache_path: str) -> dict:
     """Load cached analysis results if they exist."""
     if os.path.exists(cache_path):
+        logger.debug(f"Loading cache: {cache_path}")
         with open(cache_path, "r", encoding="utf-8") as f:
             return json.load(f)
     return None
@@ -56,6 +55,7 @@ def save_cache(cache_path: str, data: dict) -> None:
     """Save analysis results to cache."""
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    logger.debug(f"Cache saved: {cache_path}")
 
 
 def create_chunks(
@@ -63,11 +63,7 @@ def create_chunks(
     keyframes: List[Dict],
     chunk_size: float = CHUNK_SIZE_SECONDS
 ) -> List[Dict]:
-    """
-    Split transcript segments and keyframes into time-based chunks.
-    Each chunk covers chunk_size seconds of video.
-    Used for videos longer than DIRECT_ANALYSIS_THRESHOLD_SECONDS.
-    """
+    """Split transcript segments and keyframes into time-based chunks."""
     if not transcript["segments"]:
         return []
 
@@ -99,15 +95,12 @@ def create_chunks(
 
         chunk_start = chunk_end
 
-    print(f"Created {len(chunks)} chunks of {chunk_size}s each")
+    logger.info(f"Created {len(chunks)} chunks of {chunk_size}s each")
     return chunks
 
 
 def analyse_chunk(chunk: Dict, language: str) -> Dict:
-    """
-    Analyse a single chunk using Gemini.
-    Used for long videos processed in chunks.
-    """
+    """Analyse a single chunk using Gemini."""
     transcript_text = " ".join([seg["text"] for seg in chunk["segments"]])
 
     contents = []
@@ -117,7 +110,7 @@ def analyse_chunk(chunk: Dict, language: str) -> Dict:
             img = Image.open(frame["frame_path"])
             contents.append(img)
         except Exception as e:
-            print(f"Warning: Could not load frame {frame['frame_path']}: {e}")
+            logger.warning(f"Could not load frame {frame['frame_path']}: {e}")
 
     prompt = f"""
 You are an AI analyst for a professional broadcast media archive system.
@@ -160,32 +153,29 @@ Respond with valid JSON only. No other text.
             result["chunk_index"] = chunk["chunk_index"]
             result["start_time"] = chunk["start_time"]
             result["end_time"] = chunk["end_time"]
+            logger.info(f"Chunk {chunk['chunk_index']} analysed successfully")
             return result
 
         except Exception as e:
             if attempt < max_retries - 1:
-                print(f"Chunk {chunk['chunk_index']} attempt {attempt + 1} failed: {e}. Retrying...")
+                logger.warning(f"Chunk {chunk['chunk_index']} attempt {attempt + 1} failed: {e}. Retrying...")
                 time.sleep(2)
             else:
-                print(f"Chunk {chunk['chunk_index']} failed after {max_retries} attempts: {e}")
+                logger.error(f"Chunk {chunk['chunk_index']} failed after {max_retries} attempts: {e}")
                 return {
                     "chunk_index": chunk["chunk_index"],
                     "start_time": chunk["start_time"],
                     "end_time": chunk["end_time"],
                     "topics": [],
                     "speakers": [],
-                    "summary": f"Analysis failed for this segment: {str(e)}",
+                    "summary": f"Analysis failed: {str(e)}",
                     "key_moment": ""
                 }
 
 
 def analyse_all_chunks_parallel(chunks: List[Dict], language: str) -> List[Dict]:
-    """
-    Analyse all chunks in parallel using ThreadPoolExecutor.
-    Max 5 workers to stay within Gemini rate limits.
-    Used for long videos.
-    """
-    print(f"Analysing {len(chunks)} chunks in parallel (max {MAX_WORKERS} workers)...")
+    """Analyse all chunks in parallel using ThreadPoolExecutor."""
+    logger.info(f"Analysing {len(chunks)} chunks in parallel (max {MAX_WORKERS} workers)")
 
     results = []
 
@@ -200,21 +190,16 @@ def analyse_all_chunks_parallel(chunks: List[Dict], language: str) -> List[Dict]
             try:
                 result = future.result()
                 results.append(result)
-                print(f" Chunk {chunk['chunk_index']} analysed: {result.get('summary', '')[:50]}...")
             except Exception as e:
-                print(f" Chunk {chunk['chunk_index']} failed: {e}")
+                logger.error(f"Chunk {chunk['chunk_index']} failed: {e}")
 
     results.sort(key=lambda x: x["chunk_index"])
     return results
 
 
 def generate_final_summary(chunk_analyses: List[Dict], language: str) -> Dict:
-    """
-    Hierarchical summarisation — combine all chunk summaries
-    into one final complete video analysis.
-    Used for long videos after all chunks are analysed.
-    """
-    print("Generating final hierarchical summary...")
+    """Hierarchical summarisation — combine all chunk summaries."""
+    logger.info("Generating final hierarchical summary...")
 
     chunk_summaries = "\n".join([
         f"[{ca['start_time']:.1f}s - {ca['end_time']:.1f}s]: {ca['summary']}"
@@ -274,13 +259,15 @@ Respond with valid JSON only. No other text.
 
             result = json.loads(response_text)
             result["chunk_analyses"] = chunk_analyses
+            logger.info("Final summary generated successfully")
             return result
 
         except Exception as e:
             if attempt < max_retries - 1:
-                print(f"Final summary attempt {attempt + 1} failed: {e}. Retrying...")
+                logger.warning(f"Final summary attempt {attempt + 1} failed: {e}. Retrying...")
                 time.sleep(2)
             else:
+                logger.error(f"Final summary failed after {max_retries} attempts: {e}")
                 return {
                     "overall_summary": f"Final summary generation failed: {str(e)}",
                     "main_topics": all_topics,
@@ -292,30 +279,22 @@ Respond with valid JSON only. No other text.
                 }
 
 
-def analyse_video_direct(
-    transcript: dict,
-    keyframes: List[Dict]
-) -> Dict:
+def analyse_video_direct(transcript: dict, keyframes: List[Dict]) -> Dict:
     """
     Direct analysis — send everything to Gemini in one call.
     Used for short videos under DIRECT_ANALYSIS_THRESHOLD_SECONDS.
-    Faster and cheaper than chunking for short videos.
     """
-    print("Short video detected — using direct analysis (single Gemini call)...")
+    logger.info("Short video detected — using direct analysis (single Gemini call)")
 
-    # Build full transcript text
     full_transcript = " ".join([seg["text"] for seg in transcript["segments"]])
-
-    # Build contents — all frames + transcript + prompt
     contents = []
 
-    # Load all keyframes as PIL Images
     for frame in keyframes:
         try:
             img = Image.open(frame["frame_path"])
             contents.append(img)
         except Exception as e:
-            print(f"Warning: Could not load frame {frame['frame_path']}: {e}")
+            logger.warning(f"Could not load frame {frame['frame_path']}: {e}")
 
     prompt = f"""
 You are an AI analyst for a professional broadcast media archive system.
@@ -360,13 +339,15 @@ Respond with valid JSON only. No other text.
 
             result = json.loads(response_text)
             result["chunk_analyses"] = []
+            logger.info("Direct analysis completed successfully")
             return result
 
         except Exception as e:
             if attempt < max_retries - 1:
-                print(f"Direct analysis attempt {attempt + 1} failed: {e}. Retrying...")
+                logger.warning(f"Direct analysis attempt {attempt + 1} failed: {e}. Retrying...")
                 time.sleep(2)
             else:
+                logger.error(f"Direct analysis failed after {max_retries} attempts: {e}")
                 return {
                     "overall_summary": f"Analysis failed: {str(e)}",
                     "main_topics": [],
@@ -385,43 +366,33 @@ def analyse_video(
 ) -> Dict:
     """
     Main function — complete video analysis using Gemini.
-    Implements adaptive processing:
-    - Short videos (< 10 min): direct single Gemini call
-    - Long videos (>= 10 min): chunking + parallel + hierarchical summary
-    Also implements caching and retry logic.
+    Implements adaptive processing, caching, parallel chunks.
     """
-    # Check cache first
     video_hash = get_video_hash(video_path)
     cache_path = os.path.join(CACHE_DIR, f"{video_hash}.json")
 
     cached_result = load_cache(cache_path)
     if cached_result:
-        print(f" Cache hit — returning cached analysis for {video_path}")
+        logger.info(f"Cache hit — returning cached analysis for {video_path}")
         return cached_result
 
-    print(f"Cache miss — analysing video: {video_path}")
+    logger.info(f"Cache miss — analysing video: {video_path}")
 
-    # Calculate video duration from transcript
     if transcript["segments"]:
         video_duration = transcript["segments"][-1]["end"]
     else:
         video_duration = 0
 
-    print(f"Video duration: {video_duration:.1f}s")
-    print(f"Threshold for direct analysis: {DIRECT_ANALYSIS_THRESHOLD_SECONDS}s")
+    logger.info(f"Video duration: {video_duration:.1f}s — threshold: {DIRECT_ANALYSIS_THRESHOLD_SECONDS}s")
 
-    # Adaptive processing decision
     if video_duration < DIRECT_ANALYSIS_THRESHOLD_SECONDS:
-        # Short video — send everything at once
         final_analysis = analyse_video_direct(transcript, keyframes)
     else:
-        # Long video — chunk + parallel + hierarchical summary
         chunks = create_chunks(transcript, keyframes)
         chunk_analyses = analyse_all_chunks_parallel(chunks, transcript["language"])
         final_analysis = generate_final_summary(chunk_analyses, transcript["language"])
 
-    # Save to cache
     save_cache(cache_path, final_analysis)
-    print(f" Analysis cached at {cache_path}")
+    logger.info(f"Analysis cached: {cache_path}")
 
     return final_analysis

@@ -9,9 +9,12 @@ from qdrant_client.models import (
     PointStruct, SparseVector, Prefetch, FusionQuery, Fusion
 )
 from rank_bm25 import BM25Okapi
+from app.logger import get_logger
 
 # Suppress HuggingFace warning
 os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+
+logger = get_logger(__name__)
 
 # Qdrant local storage path
 QDRANT_PATH = "data/qdrant"
@@ -34,11 +37,12 @@ def get_embedding_model() -> SentenceTransformer:
     """
     Load embedding model — singleton pattern.
     Model loaded once and reused for all subsequent calls.
-    Avoids reloading 471MB model on every function call.
     """
     global _embedding_model
     if _embedding_model is None:
+        logger.info(f"Loading embedding model: {EMBEDDING_MODEL}")
         _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+        logger.info("Embedding model loaded successfully")
     return _embedding_model
 
 
@@ -46,30 +50,22 @@ def get_qdrant_client() -> QdrantClient:
     """
     Get Qdrant client — singleton pattern.
     Single client instance shared across all operations.
-    Qdrant local mode allows only one client at a time per folder.
     """
     global _qdrant_client
     if _qdrant_client is None:
         os.makedirs(QDRANT_PATH, exist_ok=True)
         _qdrant_client = QdrantClient(path=QDRANT_PATH)
+        logger.info(f"Qdrant client initialized: {QDRANT_PATH}")
     return _qdrant_client
 
 
 def get_collection_name(video_hash: str) -> str:
-    """
-    Generate collection name from video hash.
-    Each video gets its own collection in Qdrant.
-    """
+    """Generate collection name from video hash."""
     return f"video_{video_hash}"
 
 
 def create_collection_if_not_exists(client: QdrantClient, collection_name: str) -> None:
-    """
-    Create Qdrant collection with both dense and sparse vectors.
-    Dense vectors — for semantic/natural language search.
-    Sparse vectors — for keyword/BM25 search.
-    Combined — hybrid search handles both query styles.
-    """
+    """Create Qdrant collection with both dense and sparse vectors."""
     if not client.collection_exists(collection_name):
         client.create_collection(
             collection_name=collection_name,
@@ -85,27 +81,22 @@ def create_collection_if_not_exists(client: QdrantClient, collection_name: str) 
                 )
             }
         )
-        print(f"Created hybrid collection: {collection_name}")
+        logger.info(f"Created hybrid collection: {collection_name}")
     else:
-        print(f"Collection already exists: {collection_name}")
+        logger.info(f"Collection already exists: {collection_name}")
 
 
 def build_segment_context(segments: List[Dict], index: int) -> str:
     """
     Build overlapping context for a segment.
     Includes previous, current and next segment text.
-    This ensures search finds content even at segment boundaries.
     """
     parts = []
-
     if index > 0:
         parts.append(segments[index - 1]["text"].strip())
-
     parts.append(segments[index]["text"].strip())
-
     if index < len(segments) - 1:
         parts.append(segments[index + 1]["text"].strip())
-
     return " ".join(parts)
 
 
@@ -124,13 +115,9 @@ def index_video(
     - Batch encoding — all texts encoded in one call
     - Overlap context — neighbouring segments included
     - BM25 model persisted to disk for accurate query time search
-
-    Indexes:
-    1. Whisper segments with overlap context
-    2. Key stories from Gemini analysis
-    3. Overall summary
-    4. Main topics
     """
+    logger.info(f"Starting video indexing: {video_path}")
+
     model = get_embedding_model()
     client = get_qdrant_client()
     collection_name = get_collection_name(video_hash)
@@ -143,8 +130,7 @@ def index_video(
     all_texts = []
     all_payloads = []
 
-    # 1. Collect segment texts with overlap context
-    print(f"Collecting {len(segments)} transcript segments...")
+    logger.info(f"Collecting {len(segments)} transcript segments...")
     for i, segment in enumerate(segments):
         context_text = build_segment_context(segments, i)
         all_texts.append(context_text)
@@ -158,8 +144,7 @@ def index_video(
             "language": transcript["language"]
         })
 
-    # 2. Collect key stories
-    print(f"Collecting {len(analysis.get('key_stories', []))} key stories...")
+    logger.info(f"Collecting {len(analysis.get('key_stories', []))} key stories...")
     for story in analysis.get("key_stories", []):
         all_texts.append(story["story"])
         all_payloads.append({
@@ -172,10 +157,9 @@ def index_video(
             "language": analysis.get("language", "unknown")
         })
 
-    # 3. Collect overall summary
     summary_text = analysis.get("overall_summary", "")
     if summary_text:
-        print("Collecting overall summary...")
+        logger.info("Collecting overall summary...")
         all_texts.append(summary_text)
         all_payloads.append({
             "text": summary_text,
@@ -187,8 +171,7 @@ def index_video(
             "language": analysis.get("language", "unknown")
         })
 
-    # 4. Collect main topics
-    print(f"Collecting {len(analysis.get('main_topics', []))} main topics...")
+    logger.info(f"Collecting {len(analysis.get('main_topics', []))} main topics...")
     for topic in analysis.get("main_topics", []):
         all_texts.append(topic)
         all_payloads.append({
@@ -201,26 +184,24 @@ def index_video(
             "language": analysis.get("language", "unknown")
         })
 
-    # --- STEP 2: Build BM25 index and persist to disk ---
-    print("Building BM25 index for keyword search...")
+    # --- STEP 2: Build BM25 index and persist ---
+    logger.info("Building BM25 index for keyword search...")
     tokenized_corpus = [text.lower().split() for text in all_texts]
     bm25 = BM25Okapi(tokenized_corpus)
 
-    # Persist BM25 model for accurate query time sparse vectors
     os.makedirs(BM25_CACHE_DIR, exist_ok=True)
     bm25_path = os.path.join(BM25_CACHE_DIR, f"{collection_name}.pkl")
     with open(bm25_path, "wb") as f:
         pickle.dump(bm25, f)
-    print(f"BM25 model saved: {bm25_path}")
+    logger.info(f"BM25 model saved: {bm25_path}")
 
-    # --- STEP 3: Batch encode all texts for dense vectors ---
-    print(f"Batch encoding {len(all_texts)} texts...")
+    # --- STEP 3: Batch encode all texts ---
+    logger.info(f"Batch encoding {len(all_texts)} texts...")
     dense_embeddings = model.encode(all_texts)
 
-    # --- STEP 4: Build Qdrant points with both dense and sparse vectors ---
+    # --- STEP 4: Build Qdrant points ---
     points = []
     for i, (text, dense_emb, payload) in enumerate(zip(all_texts, dense_embeddings, all_payloads)):
-        # Build sparse vector using persisted BM25
         tokens = text.lower().split()
         scores = bm25.get_scores(tokens)
         indices = np.where(scores > 0)[0].tolist()
@@ -236,14 +217,11 @@ def index_video(
             payload=payload
         ))
 
-    # --- STEP 5: Store all points in Qdrant ---
-    client.upsert(
-        collection_name=collection_name,
-        points=points
-    )
+    # --- STEP 5: Store all points ---
+    client.upsert(collection_name=collection_name, points=points)
 
     total = len(points)
-    print(f" Indexed {total} documents in collection '{collection_name}'")
+    logger.info(f"Indexed {total} documents in collection '{collection_name}'")
     return total
 
 
@@ -260,29 +238,19 @@ def search(
     - Natural language: "minister who lied about toll road"
     - Keywords: "Scheuer PKW Maut"
     - Mixed language: "Scheuer court case"
-
-    Uses persisted BM25 model for accurate sparse query vectors.
-
-    Args:
-        video_hash: Hash of video to search in
-        query: Natural language or keyword search query
-        limit: Maximum number of results to return
-        content_type: Optional filter - 'segment', 'story', 'summary', 'topic'
-
-    Returns:
-        List of relevant results with text, timestamp and score
     """
+    logger.info(f"Searching: '{query}' (limit={limit}, type={content_type})")
+
     model = get_embedding_model()
     client = get_qdrant_client()
     collection_name = get_collection_name(video_hash)
 
     if not client.collection_exists(collection_name):
+        logger.error(f"No index found for video hash: {video_hash}")
         raise ValueError(f"No index found for video hash: {video_hash}")
 
-    # Dense query vector — semantic search
     query_dense = model.encode(query).tolist()
 
-    # Load persisted BM25 model for accurate sparse query vector
     bm25_path = os.path.join(BM25_CACHE_DIR, f"{collection_name}.pkl")
     if os.path.exists(bm25_path):
         with open(bm25_path, "rb") as f:
@@ -292,12 +260,11 @@ def search(
         query_indices = np.where(query_scores > 0)[0].tolist()
         query_values = query_scores[query_indices].tolist()
         query_sparse = SparseVector(indices=query_indices, values=query_values)
+        logger.debug(f"BM25 sparse vector: {len(query_indices)} non-zero terms")
     else:
-        # Fallback — dense search only if BM25 not found
-        print("Warning: BM25 model not found, using dense search only")
+        logger.warning("BM25 model not found, using dense search only")
         query_sparse = SparseVector(indices=[], values=[])
 
-    # Build filter if content_type specified
     query_filter = None
     if content_type:
         from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -310,7 +277,6 @@ def search(
             ]
         )
 
-    # Hybrid search using RRF fusion
     results = client.query_points(
         collection_name=collection_name,
         prefetch=[
@@ -344,4 +310,5 @@ def search(
             "video_path": point.payload["video_path"]
         })
 
+    logger.info(f"Search returned {len(formatted)} results")
     return formatted
