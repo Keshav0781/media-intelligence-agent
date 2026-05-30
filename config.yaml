@@ -1,0 +1,44 @@
+# Media Intelligence Agent — Configuration
+# All pipeline settings in one place
+# Change values here — no need to touch code
+
+pipeline:
+  # Audio extraction
+  audio:
+    sample_rate: 16000          # Hz — optimal for Whisper
+    channels: 1                 # Mono — Whisper works best with mono
+
+  # Whisper transcription
+  transcription:
+    model_size: base            # tiny/base/small/medium/large
+                                # base = good balance for testing
+                                # large = best accuracy for production
+
+  # Frame extraction
+  frames:
+    histogram_threshold: 0.4    # Scene change sensitivity 0-1
+                                # Lower = more sensitive (more frames)
+                                # Higher = less sensitive (fewer frames)
+                                # 0.4 = optimal for news broadcasts
+    min_interval_seconds: 2.0   # Minimum seconds between keyframes
+
+  # Gemini analysis
+  gemini:
+    max_parallel_workers: 5     # Max parallel Gemini API calls
+    chunk_size_seconds: 30.0    # Video chunk size for long video processing
+    direct_analysis_threshold: 600.0  # Videos shorter than this use single call
+
+# Storage paths
+storage:
+  audio_output: data/audio
+  keyframes_dir: data/keyframes
+  gemini_cache: data/cache
+  qdrant_path: data/qdrant
+  bm25_cache: data/bm25
+  logs_dir: logs
+
+# RAG settings
+rag:
+  embedding_model: paraphrase-multilingual-MiniLM-L12-v2
+  vector_dim: 384
+  default_search_limit: 5

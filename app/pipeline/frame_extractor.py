@@ -10,9 +10,16 @@ def extract_keyframes(
     video_path: str,
     output_dir: str,
     transcript_segments: List[Dict] = None,
-    threshold: float = 0.4,
-    min_interval_seconds: float = 2.0
+    threshold: float = None,
+    min_interval_seconds: float = None
 ) -> List[Dict]:
+    # Load defaults from config if not provided
+    from app.config import get_pipeline_config
+    cfg = get_pipeline_config()["frames"]
+    if threshold is None:
+        threshold = cfg["histogram_threshold"]
+    if min_interval_seconds is None:
+        min_interval_seconds = cfg["min_interval_seconds"]
     """
     Extract keyframes using multimodal scene detection.
     Combines visual histogram comparison with audio transcript timestamps.

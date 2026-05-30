@@ -19,18 +19,17 @@ logger = get_logger(__name__)
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 GEMINI_MODEL = os.getenv("GEMINI_MODEL")
 
-# Cache directory
-CACHE_DIR = "data/cache"
+# Load from config
+from app.config import get_pipeline_config, get_storage_config
+_pipeline_cfg = get_pipeline_config()
+_storage_cfg = get_storage_config()
+
+CACHE_DIR = _storage_cfg["gemini_cache"]
+MAX_WORKERS = _pipeline_cfg["gemini"]["max_parallel_workers"]
+CHUNK_SIZE_SECONDS = _pipeline_cfg["gemini"]["chunk_size_seconds"]
+DIRECT_ANALYSIS_THRESHOLD_SECONDS = _pipeline_cfg["gemini"]["direct_analysis_threshold"]
+
 os.makedirs(CACHE_DIR, exist_ok=True)
-
-# Maximum parallel workers
-MAX_WORKERS = 5
-
-# Chunk size in seconds
-CHUNK_SIZE_SECONDS = 30.0
-
-# Threshold for adaptive processing
-DIRECT_ANALYSIS_THRESHOLD_SECONDS = 600.0
 
 
 def get_video_hash(video_path: str) -> str:

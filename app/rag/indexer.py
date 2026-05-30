@@ -16,17 +16,14 @@ os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 
 logger = get_logger(__name__)
 
-# Qdrant local storage path
-QDRANT_PATH = "data/qdrant"
+from app.config import get_storage_config, get_rag_config
+_storage_cfg = get_storage_config()
+_rag_cfg = get_rag_config()
 
-# BM25 model cache directory
-BM25_CACHE_DIR = "data/bm25"
-
-# Embedding model — multilingual, handles German + English queries
-EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
-
-# Vector dimension for this model
-VECTOR_DIM = 384
+QDRANT_PATH = _storage_cfg["qdrant_path"]
+BM25_CACHE_DIR = _storage_cfg["bm25_cache"]
+EMBEDDING_MODEL = _rag_cfg["embedding_model"]
+VECTOR_DIM = _rag_cfg["vector_dim"]
 
 # Singleton instances — created once, reused throughout
 _embedding_model = None
