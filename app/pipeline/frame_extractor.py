@@ -1,6 +1,11 @@
+# Note: visual+audio combined detection requires exact frame coincidence.
+# In practice, camera cuts and speech boundaries are typically 2-5 frames apart.
+# This is a known characteristic of broadcast media — not a bug.
+# Future improvement: implement tolerance window of ±5 frames for combined detection.
+
+
 import cv2
 import os
-import base64
 from typing import List, Dict
 
 def extract_keyframes(
@@ -31,8 +36,7 @@ def extract_keyframes(
             - frame_path: Path to saved frame image
             - timestamp: Time in seconds when frame was captured
             - frame_number: Frame number in video
-            - base64: Base64 encoded frame for Gemini
-            - detection_type: 'visual' or 'audio' — what triggered extraction
+            - detection_type: 'visual', 'audio' or 'visual+audio'
     """
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video file not found: {video_path}")
@@ -54,7 +58,6 @@ def extract_keyframes(
     print(f"  Duration: {duration:.1f} seconds")
 
     # Build set of frame numbers where speech boundaries occur
-    # These are timestamps where a new speech segment starts
     speech_boundary_frames = set()
     if transcript_segments:
         for segment in transcript_segments:
@@ -88,7 +91,7 @@ def extract_keyframes(
         detection_type = None
 
         if prev_hist is not None and frames_since_last >= min_interval_frames:
-            
+
             # Signal 1 — Visual scene change detection
             similarity = cv2.compareHist(hist, prev_hist, cv2.HISTCMP_CORREL)
             if similarity < (1 - threshold):
@@ -96,10 +99,12 @@ def extract_keyframes(
                 detection_type = "visual"
 
             # Signal 2 — Audio speech boundary detection
-            # Check if current frame aligns with a speech boundary
             if frame_number in speech_boundary_frames:
-                should_extract = True
-                detection_type = "audio" if not should_extract else "visual+audio"
+                if should_extract:
+                    detection_type = "visual+audio"
+                else:
+                    should_extract = True
+                    detection_type = "audio"
 
         if should_extract:
             timestamp = frame_number / fps
@@ -107,14 +112,12 @@ def extract_keyframes(
             frame_path = os.path.join(output_dir, frame_filename)
             cv2.imwrite(frame_path, frame)
 
-            _, buffer = cv2.imencode('.jpg', frame)
-            base64_frame = base64.b64encode(buffer).decode('utf-8')
-
+            # Store only file path — PIL Image loaded on demand in Gemini component
+            # This is lazy loading — keeps memory low for long videos
             keyframes.append({
                 "frame_path": frame_path,
                 "timestamp": round(timestamp, 2),
                 "frame_number": frame_number,
-                "base64": base64_frame,
                 "detection_type": detection_type
             })
 
